@@ -1,2 +1,2 @@
 # amqp-rpc
-A golang RPC framwork base on amqp protocol
+A golang RPC framwork base on amqp (Advanced Message Queuing Protocol)
