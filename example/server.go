@@ -1,8 +1,10 @@
 package main
 
 import (
-	"github.com/liyue201/amqp-rpc/rpc"
 	"log"
+	//"time"
+
+	"github.com/liyue201/amqp-rpc/rpc"
 )
 
 type Calculator struct {
@@ -26,6 +28,11 @@ func (this *Calculator) Sub(arg *Arg, result *int) error {
 func main() {
 	server := rpc.NewServer()
 	server.Register(new(Calculator))
+
+	//go func() {
+	//	time.Sleep(time.Second * 10)
+	//	server.StopService()
+	//}()
 
 	err := server.Serve("amqp://guest:guest@localhost:5672/", "rpc_queue", 10)
 	if err != nil {

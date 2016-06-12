@@ -6,14 +6,16 @@ import (
 	"bytes"
 	"encoding/gob"
 	"errors"
-	"github.com/streadway/amqp"
 	"log"
 	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/streadway/amqp"
 )
 
 // Precompute the reflect type for error.  Can't use error directly
@@ -55,8 +57,10 @@ type Server struct {
 	respLock   sync.Mutex // protects freeResp
 	freeResp   *Response
 
-	stopService        chan bool
-	inHandlingMsgCount int32
+	conn             *amqp.Connection
+	channel          *amqp.Channel
+	done             chan error
+	nProcessingCount int32
 }
 
 type ServerCodec interface {
@@ -90,11 +94,7 @@ func (c *gobServerCodec) WriteResponse(r *Response, body interface{}) (err error
 
 // NewServer returns a new Server.
 func NewServer() *Server {
-	return &Server{serviceMap: make(map[string]*service), stopService: make(chan bool), inHandlingMsgCount: 0}
-}
-
-func (this *Server) GetInHandlingMsgCount() int32 {
-	return atomic.LoadInt32(&this.inHandlingMsgCount)
+	return &Server{serviceMap: make(map[string]*service), done: make(chan error)}
 }
 
 // DefaultServer is the default instance of *Server.
@@ -238,13 +238,13 @@ func (server *Server) Serve(url string, queueName string, maxConcurrentNumber in
 	if err != nil {
 		return errors.New("Failed to connect to RabbitMQ")
 	}
-	defer conn.Close()
+	server.conn = conn
 
 	ch, err := conn.Channel()
 	if err != nil {
 		return errors.New("Failed to open a channel")
 	}
-	defer ch.Close()
+	server.channel = ch
 
 	q, err := ch.QueueDeclare(
 		queueName, // name
@@ -283,28 +283,21 @@ func (server *Server) Serve(url string, queueName string, maxConcurrentNumber in
 	go server.serveDeliverys(ch, msgs)
 
 	log.Println("Awaiting RPC requests at queue:", queueName)
-	<-server.stopService
+	<-server.done
 
+	log.Println("done.")
 	return nil
 }
 
 func (server *Server) StopService() {
-	server.stopService <- true
-}
-
-func (server *Server) incInHandlingMsgCount() {
-	atomic.AddInt32(&server.inHandlingMsgCount, 1)
-}
-
-func (server *Server) decInHandlingMsgCount() {
-	atomic.AddInt32(&server.inHandlingMsgCount, -1)
+	server.channel.Close()
 }
 
 func (server *Server) serveDeliverys(ch *amqp.Channel, msgs <-chan amqp.Delivery) {
 	for d := range msgs {
 		go func(deliery amqp.Delivery) {
-			server.incInHandlingMsgCount()
-			defer server.decInHandlingMsgCount()
+			atomic.AddInt32(&server.nProcessingCount, 1)
+			defer atomic.AddInt32(&server.nProcessingCount, -1)
 
 			response, err := server.handleMessage(deliery.Body)
 			if err != nil {
@@ -328,6 +321,14 @@ func (server *Server) serveDeliverys(ch *amqp.Channel, msgs <-chan amqp.Delivery
 			deliery.Ack(false)
 		}(d)
 	}
+	for {
+		if atomic.LoadInt32(&server.nProcessingCount) == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond * 20)
+
+	}
+	server.done <- nil
 }
 
 func (server *Server) handleMessage(data []byte) (response []byte, err error) {
