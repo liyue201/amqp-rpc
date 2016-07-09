@@ -1,5 +1,3 @@
-//refer to net/rpc server.go
-
 package rpc
 
 import (

@@ -1,5 +1,3 @@
-//refer to net/rpc client.go
-
 package rpc
 
 import (
@@ -11,11 +9,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/streadway/amqp"
 	"io"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/streadway/amqp"
 )
 
 // ServerError represents an error that has been returned from
@@ -27,6 +26,7 @@ func (e ServerError) Error() string {
 }
 
 var ErrShutdown = errors.New("connection is shut down")
+var ErrTimeout = errors.New("Timeout")
 
 // Call represents an active RPC.
 type Call struct {
@@ -51,6 +51,7 @@ type Client struct {
 	pending  map[string]*Call
 	closing  bool // user has called Close
 	shutdown bool // server has told us to stop
+	lastErr  error
 }
 
 func GetMd5String(s string) string {
@@ -156,6 +157,19 @@ func (client *Client) handleDeliveries(msgs <-chan amqp.Delivery) {
 			call.done()
 		}
 	}
+
+	client.mutex.Lock()
+	client.shutdown = true
+	client.mutex.Unlock()
+
+	for _, call := range client.pending {
+		call.Error = ErrShutdown
+		call.done()
+	}
+
+	client.fatal(ErrShutdown)
+
+	log.Println("handleDeliveries:", ErrShutdown)
 }
 
 func (client *Client) Close() error {
@@ -207,7 +221,7 @@ func (client *Client) Call(serviceMethod string, args interface{}, reply interfa
 	case <-call.Done:
 		return call.Error
 	case <-time.After(time.Millisecond * time.Duration(expiration)):
-		return errors.New("Timeout")
+		return ErrTimeout
 	}
 	return call.Error
 }
@@ -290,4 +304,23 @@ func (client *Client) encodeRequest(r *Request, body interface{}) ([]byte, error
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func (client *Client) fatal(err error) error {
+	client.mutex.Lock()
+	if client.lastErr == nil {
+		client.lastErr = err
+		client.conn.Close()
+	}
+
+	client.mutex.Unlock()
+	return err
+}
+
+func (client *Client) Err() error {
+
+	client.mutex.Lock()
+	err := client.lastErr
+	client.mutex.Unlock()
+	return err
 }
