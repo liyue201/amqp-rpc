@@ -1,5 +1,5 @@
 # amqp-rpc 
-A rpc framwork based on amqp (Advanced Message Queuing Protocol)
+A rpc package based on amqp (Advanced Message Queuing Protocol)
 
 
 # Example
